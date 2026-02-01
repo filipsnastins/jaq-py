@@ -11,6 +11,7 @@ Repository = "https://github.com/filipsnastins/jaq-py"
 
 [project.optional-dependencies]
 dev = [
+    "jq~=1.11",
     "maturin~=1.11",
     "mypy~=1.19",
     "pytest-pretty~=1.3",
