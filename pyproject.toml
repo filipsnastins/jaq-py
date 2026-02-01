@@ -1,0 +1,58 @@
+[project]
+name = "jaq-py"
+version = "0.1.0"
+description = "Python bindings for jaq, a jq clone written in Rust"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+
+[project.urls]
+Repository = "https://github.com/filipsnastins/jaq-py"
+
+[project.optional-dependencies]
+dev = [
+    "maturin~=1.11",
+    "mypy~=1.19",
+    "pytest-pretty~=1.3",
+    "pytest~=9.0",
+    "ruff~=0.14",
+]
+
+[tool.ruff]
+src = ["python"]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.format]
+preview = true
+docstring-code-format = true
+
+[tool.ruff.lint]
+preview = true
+select = ["ALL"]
+ignore = [
+    "ANN401",
+    "COM812",
+    "CPY001",
+    "D",
+    "DOC",
+    "PLR6301",
+    "A004",
+    "D103",
+    "D104",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "D100", "PLR2004"]
+"*.pyi" = ["A001", "A002", "D413", "PYI021"]
+
+[tool.mypy]
+strict = true
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "jaq_py._jaq_py"
+python-source = "python"
