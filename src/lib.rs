@@ -4,7 +4,7 @@ use jaq_core::load::{Arena, File, Loader};
 use jaq_core::{data, unwrap_valr, Compiler, Ctx, Native, Vars};
 use jaq_json::{Map, Num, Tag, Val};
 use num_bigint::BigInt;
-use pyo3::exceptions::{PyException, PyTypeError};
+use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use std::sync::Arc;
@@ -41,13 +41,19 @@ pyo3::create_exception!(
 );
 
 fn format_errors<E: std::fmt::Debug>(errs: &[E]) -> String {
-    errs.iter()
-        .map(|e| format!("{e:?}"))
-        .collect::<Vec<_>>()
-        .join("; ")
+    use std::fmt::Write;
+    let mut buf = String::new();
+    for (i, e) in errs.iter().enumerate() {
+        if i > 0 {
+            buf.push_str("; ");
+        }
+        write!(buf, "{e:?}").unwrap();
+    }
+    buf
 }
 
 type CompiledFilter = jaq_core::compile::Filter<Native<data::JustLut<Val>>>;
+type FilterResult = Result<Val, jaq_core::Error<Val>>;
 
 /// Compile a jaq filter string into a reusable JaqProgram.
 #[pyfunction]
@@ -80,28 +86,26 @@ fn compile(filter: &str, args: Option<&Bound<'_, PyDict>>) -> PyResult<JaqProgra
     Ok(JaqProgram {
         filter: Arc::from(filter),
         compiled: Arc::new(compiled),
-        vars: Arc::new(vars),
+        vars: Arc::from(vars),
     })
 }
 
 fn extract_args(args: Option<&Bound<'_, PyDict>>) -> PyResult<(Vec<String>, Vec<Val>)> {
-    let mut var_names = Vec::new();
-    let mut var_values = Vec::new();
+    let Some(args_dict) = args else {
+        return Ok((Vec::new(), Vec::new()));
+    };
 
-    if let Some(args_dict) = args {
-        var_names.reserve(args_dict.len());
-        var_values.reserve(args_dict.len());
-        for (key, value) in args_dict.iter() {
+    args_dict
+        .iter()
+        .map(|(key, value)| {
             let name: String = key.extract()?;
             let val = python_to_val(&value).map_err(|e| {
                 JaqJsonError::new_err(format!("Failed to convert arg '{name}': {e}"))
             })?;
-            var_names.push(name);
-            var_values.push(val);
-        }
-    }
-
-    Ok((var_names, var_values))
+            Ok((name, val))
+        })
+        .collect::<PyResult<Vec<_>>>()
+        .map(|pairs| pairs.into_iter().unzip())
 }
 
 /// A compiled jaq program, ready to accept input.
@@ -110,7 +114,7 @@ fn extract_args(args: Option<&Bound<'_, PyDict>>) -> PyResult<(Vec<String>, Vec<
 struct JaqProgram {
     filter: Arc<str>,
     compiled: Arc<CompiledFilter>,
-    vars: Arc<Vec<Val>>,
+    vars: Arc<[Val]>,
 }
 
 impl JaqProgram {
@@ -119,7 +123,7 @@ impl JaqProgram {
             compiled: Arc::clone(&self.compiled),
             filter: Arc::clone(&self.filter),
             input,
-            vars: (*self.vars).clone(),
+            vars: self.vars.to_vec(),
         }
     }
 }
@@ -132,7 +136,7 @@ impl JaqProgram {
         &self.filter
     }
 
-    /// Provide input as a raw JSON string (fast path — parses directly to jaq values).
+    /// Provide input as a raw JSON string (fast path — skips Python object traversal).
     #[pyo3(signature = (text, slurp=false))]
     fn input_text(&self, py: Python<'_>, text: &str, slurp: bool) -> PyResult<JaqProgramWithInput> {
         // Own the bytes so we can release the GIL during parsing.
@@ -166,7 +170,7 @@ impl JaqProgram {
 }
 
 /// A compiled jaq program with input bound, ready to execute.
-#[pyclass]
+#[pyclass(frozen)]
 struct JaqProgramWithInput {
     filter: Arc<str>,
     compiled: Arc<CompiledFilter>,
@@ -176,12 +180,11 @@ struct JaqProgramWithInput {
 
 impl JaqProgramWithInput {
     /// Run the filter with the GIL released, passing the result iterator to `f`.
-    fn run_detached<T: Send>(
-        &self,
-        py: Python<'_>,
-        f: impl FnOnce(&mut dyn Iterator<Item = Result<Val, jaq_core::Error<Val>>>) -> Result<T, String>
-            + Send,
-    ) -> PyResult<T> {
+    fn run_detached<T, F>(&self, py: Python<'_>, f: F) -> PyResult<T>
+    where
+        T: Send,
+        F: FnOnce(&mut dyn Iterator<Item = FilterResult>) -> Result<T, String> + Send,
+    {
         let compiled = Arc::clone(&self.compiled);
         let input = self.input.clone();
         let vars = self.vars.clone();
@@ -192,6 +195,16 @@ impl JaqProgramWithInput {
             f(&mut iter)
         })
         .map_err(JaqRuntimeError::new_err)
+    }
+
+    fn take_first(
+        iter: &mut dyn Iterator<Item = FilterResult>,
+    ) -> Result<Option<Val>, String> {
+        match iter.next() {
+            Some(Ok(val)) => Ok(Some(val)),
+            Some(Err(e)) => Err(format!("{e:?}")),
+            None => Ok(None),
+        }
     }
 }
 
@@ -205,24 +218,13 @@ impl JaqProgramWithInput {
 
     /// Execute the filter and return the first result as a Python object.
     fn first(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let val = self.run_detached(py, |iter| match iter.next() {
-            Some(Ok(val)) => Ok(Some(val)),
-            Some(Err(e)) => Err(format!("{e:?}")),
-            None => Ok(None),
-        })?;
-        match val {
-            Some(val) => val_to_python(py, val),
-            None => Ok(py.None()),
-        }
+        self.run_detached(py, Self::take_first)?
+            .map_or_else(|| Ok(py.None()), |val| val_to_python(py, val))
     }
 
     /// Execute the filter and return the first result as a JSON string.
     fn first_text(&self, py: Python<'_>) -> PyResult<Option<String>> {
-        self.run_detached(py, |iter| match iter.next() {
-            Some(Ok(val)) => Ok(Some(val.to_string())),
-            Some(Err(e)) => Err(format!("{e:?}")),
-            None => Ok(None),
-        })
+        self.run_detached(py, |iter| Self::take_first(iter).map(|v| v.map(|v| v.to_string())))
     }
 
     /// Execute the filter and return all results as a list of Python objects.
@@ -236,23 +238,13 @@ impl JaqProgramWithInput {
 
     /// Execute the filter and return all results as a newline-separated JSON string (JSONL).
     ///
-    /// Fastest output path — skips Python object creation entirely.
+    /// Fastest output path — releases the GIL and skips Python object creation entirely.
     fn all_text(&self, py: Python<'_>) -> PyResult<String> {
         self.run_detached(py, |iter| {
-            use std::fmt::Write;
-            let mut buf = String::new();
-            for result in iter {
-                match result {
-                    Ok(val) => {
-                        if !buf.is_empty() {
-                            buf.push('\n');
-                        }
-                        write!(buf, "{val}").unwrap();
-                    }
-                    Err(e) => return Err(format!("{e:?}")),
-                }
-            }
-            Ok(buf)
+            let lines: Vec<String> = iter
+                .map(|r| r.map(|v| v.to_string()).map_err(|e| format!("{e:?}")))
+                .collect::<Result<_, _>>()?;
+            Ok(lines.join("\n"))
         })
     }
 
@@ -268,11 +260,9 @@ fn val_to_python(py: Python<'_>, val: Val) -> PyResult<Py<PyAny>> {
         Val::Bool(b) => Ok(b.into_pyobject(py)?.to_owned().into_any().unbind()),
         Val::Num(n) => num_to_python(py, n),
         Val::Str(bytes, Tag::Utf8) => {
-            // Most JSON strings are valid UTF-8; fall back to bytes if not.
-            let s = match std::str::from_utf8(&bytes) {
-                Ok(s) => s,
-                Err(_) => return Ok(PyBytes::new(py, &bytes).into_any().unbind()),
-            };
+            let s = std::str::from_utf8(&bytes).map_err(|e| {
+                JaqJsonError::new_err(format!("Val tagged as UTF-8 contains invalid bytes: {e}"))
+            })?;
             Ok(PyString::new(py, s).into_any().unbind())
         }
         Val::Str(bytes, Tag::Bytes) => Ok(PyBytes::new(py, &bytes).into_any().unbind()),
@@ -298,10 +288,12 @@ fn val_to_python(py: Python<'_>, val: Val) -> PyResult<Py<PyAny>> {
 fn num_to_python(py: Python<'_>, num: Num) -> PyResult<Py<PyAny>> {
     match num {
         Num::Int(i) => Ok(i.into_pyobject(py)?.into_any().unbind()),
-        Num::BigInt(bi) => Ok((&*bi).into_pyobject(py)?.into_any().unbind()),
+        Num::BigInt(bi) => Ok(bi.as_ref().into_pyobject(py)?.into_any().unbind()),
         Num::Float(f) => Ok(f.into_pyobject(py)?.into_any().unbind()),
         Num::Dec(s) => {
-            let f: f64 = s.parse().unwrap_or(f64::NAN);
+            let f: f64 = s.parse().map_err(|_| {
+                JaqJsonError::new_err(format!("Cannot represent decimal '{s}' as float"))
+            })?;
             Ok(f.into_pyobject(py)?.into_any().unbind())
         }
     }
@@ -315,31 +307,25 @@ fn python_to_val(obj: &Bound<'_, PyAny>) -> PyResult<Val> {
     } else if let Ok(b) = obj.cast::<PyBool>() {
         Ok(Val::Bool(b.is_true()))
     } else if obj.is_instance_of::<PyInt>() {
-        // isize fast path; fall back to BigInt for values that don't fit.
+        // Uses is_instance_of (not cast) because we try the fast isize extraction
+        // first, falling back to BigInt only on overflow.
         if let Ok(i) = obj.extract::<isize>() {
             Ok(Val::Num(Num::Int(i)))
         } else {
             let bi: BigInt = obj.extract()?;
             Ok(Val::Num(Num::big_int(bi)))
         }
-    } else if obj.is_instance_of::<PyFloat>() {
-        let f: f64 = obj.extract()?;
-        Ok(Val::Num(Num::Float(f)))
+    } else if let Ok(f) = obj.cast::<PyFloat>() {
+        Ok(Val::Num(Num::Float(f.value())))
     } else if let Ok(s) = obj.cast::<PyString>() {
         let s: String = s.extract()?;
         Ok(Val::utf8_str(s))
     } else if let Ok(b) = obj.cast::<PyBytes>() {
         Ok(Val::byte_str(b.as_bytes().to_vec()))
-    } else if let Ok(list) = obj.cast::<PyList>() {
-        let items: Vec<Val> = list
-            .iter()
-            .map(|item| python_to_val(&item))
-            .collect::<PyResult<_>>()?;
-        Ok(items.into_iter().collect())
-    } else if let Ok(tuple) = obj.cast::<PyTuple>() {
-        let items: Vec<Val> = tuple
-            .iter()
-            .map(|item| python_to_val(&item))
+    } else if obj.is_instance_of::<PyList>() || obj.is_instance_of::<PyTuple>() {
+        let items: Vec<Val> = obj
+            .try_iter()?
+            .map(|item| python_to_val(&item?))
             .collect::<PyResult<_>>()?;
         Ok(items.into_iter().collect())
     } else if let Ok(dict) = obj.cast::<PyDict>() {
@@ -349,7 +335,7 @@ fn python_to_val(obj: &Bound<'_, PyAny>) -> PyResult<Val> {
         }
         Ok(Val::obj(map))
     } else {
-        Err(PyTypeError::new_err(format!(
+        Err(JaqJsonError::new_err(format!(
             "Cannot convert {} to jaq value",
             obj.get_type().name()?
         )))

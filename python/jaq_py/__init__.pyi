@@ -41,14 +41,14 @@ def compile(filter: str, args: dict[str, Any] | None = None) -> JaqProgram:
     """
 
 class JaqProgram:
-    """A compiled jaq program ready to accept input."""
+    """A compiled jaq program, ready to accept input."""
 
     @property
     def program_string(self) -> str:
         """The original filter string that was compiled."""
 
     def input_text(self, text: str, slurp: bool = False) -> JaqProgramWithInput:
-        """Provide input as a raw JSON string (fast path, skips Python object traversal).
+        """Provide input as a raw JSON string (fast path — skips Python object traversal).
 
         Args:
             text: A JSON-encoded string, or multiple whitespace-separated JSON values if slurp=True.
@@ -75,14 +75,14 @@ class JaqProgram:
         """
 
 class JaqProgramWithInput:
-    """A compiled jaq program with input, ready to execute."""
+    """A compiled jaq program with input bound, ready to execute."""
 
     @property
     def program_string(self) -> str:
         """The original filter string that was compiled."""
 
     def first(self) -> Any | None:
-        """Execute the filter and return the first result.
+        """Execute the filter and return the first result as a Python object.
 
         Returns:
             The first output value, or None if the filter produces no output.
@@ -102,7 +102,7 @@ class JaqProgramWithInput:
         """
 
     def all(self) -> list[Any]:
-        """Execute the filter and return all results as a list.
+        """Execute the filter and return all results as a list of Python objects.
 
         Returns:
             A list of all output values produced by the filter.
@@ -112,10 +112,9 @@ class JaqProgramWithInput:
         """
 
     def all_text(self) -> str:
-        """Execute the filter and return all results as a single newline-separated JSON string.
+        """Execute the filter and return all results as a newline-separated JSON string (JSONL).
 
-        This is the fastest output path — it releases the GIL, skips Python object
-        creation entirely, and writes all output values into a single buffer.
+        Fastest output path — releases the GIL and skips Python object creation entirely.
 
         Returns:
             A newline-separated string of JSON-encoded values (JSONL / JSON Lines format).
