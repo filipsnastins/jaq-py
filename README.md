@@ -55,3 +55,4 @@ make bench      # Run performance benchmarks
 ## TODO
 
 - [ ] GIL release - experiment with free-threaded mode in Python 3.13
+- [ ] Implement `__iter__` interface for `JaqProgramWithInput`.
