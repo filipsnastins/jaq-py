@@ -32,13 +32,13 @@ run_benchmark() {
     echo ""
 
     echo "CLI:"
-    bench "jq" jq "$filter" "$data"
-    bench "jaq" "$HOME/.cargo/bin/jaq" "$filter" "$data"
+    bench "jq (input/output as text)" jq "$filter" "$data"
+    bench "jaq (input/output as text)" "$HOME/.cargo/bin/jaq" "$filter" "$data"
 
     echo ""
     echo "Python + subprocess:"
-    bench "jq + subprocess" uv run python scripts/jq_subprocess.py "$data" "$filter" "$iterations"
-    bench "jaq + subprocess" uv run python scripts/jaq_subprocess.py "$data" "$filter" "$iterations"
+    bench "jq + subprocess (input/output as text)" uv run python scripts/jq_subprocess.py "$data" "$filter" "$iterations"
+    bench "jaq + subprocess (input/output as text)" uv run python scripts/jaq_subprocess.py "$data" "$filter" "$iterations"
 
     echo ""
     echo "Python bindings:"
