@@ -40,11 +40,11 @@ def test_input_text_slurp() -> None:
 
 
 def test_output_text() -> None:
-    assert jaq_py.compile(".").input_value("42").text() == '"42"'
+    assert jaq_py.compile(".").input_value("42").first_text() == '"42"'
 
-    assert jaq_py.compile(".").input_value({"a": 1}).text() == '{"a":1}'
+    assert jaq_py.compile(".").input_value({"a": 1}).first_text() == '{"a":1}'
 
-    assert jaq_py.compile(".[]").input_value([]).text() is None
+    assert jaq_py.compile(".[]").input_value([]).first_text() is None
 
 
 def test_compile_with_args() -> None:
@@ -78,12 +78,12 @@ def test_json_error_input_value() -> None:
     class NotSerializable:
         pass
 
-    with pytest.raises(jaq_py.JaqJsonError, match=r"Failed to convert input: unsupported type"):
+    with pytest.raises(jaq_py.JaqJsonError, match=r"Cannot convert NotSerializable to jaq value"):
         jaq_py.compile(".").input_value(NotSerializable()).first()
 
 
 def test_json_error_input_text() -> None:
-    with pytest.raises(jaq_py.JaqJsonError, match=r"Failed to parse JSON: expected ident at line 1 column 2"):
+    with pytest.raises(jaq_py.JaqJsonError, match=r"Failed to parse JSON:.*value expected"):
         jaq_py.compile(".").input_text("not valid json").first()
 
 
@@ -91,5 +91,5 @@ def test_json_error_compile_args() -> None:
     class NotSerializable:
         pass
 
-    with pytest.raises(jaq_py.JaqJsonError, match=r"Failed to convert arg"):
+    with pytest.raises(jaq_py.JaqJsonError, match=r"Cannot convert NotSerializable to jaq value"):
         jaq_py.compile("$x", args={"x": NotSerializable()})

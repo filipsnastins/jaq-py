@@ -1,13 +1,17 @@
 //! Python bindings for jaq, a jq clone written in Rust.
 
-use jaq_core::{load, Compiler, Ctx, Filter, Native, RcIter};
-use jaq_json::Val;
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+use jaq_core::load::{Arena, File, Loader};
+use jaq_core::{data, unwrap_valr, Compiler, Ctx, Native, Vars};
+use jaq_json::{Map, Num, Tag, Val};
+use num_bigint::BigInt;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
-use pythonize::{depythonize, pythonize};
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
+use std::fmt::Write;
+use std::rc::Rc;
 
 pyo3::create_exception!(
     jaq_py,
@@ -41,36 +45,35 @@ pyo3::create_exception!(
 );
 
 fn format_errors<E: std::fmt::Debug>(errs: &[E]) -> String {
-    errs.iter()
-        .map(|e| format!("{e:?}"))
-        .collect::<Vec<_>>()
-        .join("; ")
+    let mut buf = String::new();
+    for (i, e) in errs.iter().enumerate() {
+        if i > 0 {
+            buf.push_str("; ");
+        }
+        write!(buf, "{e:?}").unwrap();
+    }
+    buf
 }
 
+fn runtime_err(e: jaq_core::Error<Val>) -> PyErr {
+    JaqRuntimeError::new_err(format!("{e:?}"))
+}
+
+type CompiledFilter = jaq_core::compile::Filter<Native<data::JustLut<Val>>>;
+type FilterResult = Result<Val, jaq_core::Error<Val>>;
+
 /// Compile a jaq filter string into a reusable JaqProgram.
-///
-/// Args:
-///     filter: A jq/jaq filter expression (e.g., ".foo", ".[] | select(.x > 1)").
-///     args: Optional dict of variables to bind (e.g., {"a": 1} makes $a available).
-///
-/// Returns:
-///     A compiled JaqProgram that can be executed with different inputs.
-///
-/// Raises:
-///     JaqParseError: If the filter syntax is invalid.
-///     JaqCompileError: If the filter fails to compile.
-///     JaqJsonError: If args values cannot be converted to JSON.
 #[pyfunction]
 #[pyo3(signature = (filter, args=None))]
 fn compile(filter: &str, args: Option<&Bound<'_, PyDict>>) -> PyResult<JaqProgram> {
-    let (var_names, var_values) = extract_args(args)?;
+    let (var_names, vars) = extract_args(args)?;
 
-    let loader = load::Loader::new(jaq_std::defs().chain(jaq_json::defs()));
-    let arena = load::Arena::default();
+    let loader = Loader::new(jaq_std::defs().chain(jaq_json::defs()));
+    let arena = Arena::default();
     let modules = loader
         .load(
             &arena,
-            load::File {
+            File {
                 code: filter,
                 path: (),
             },
@@ -88,59 +91,43 @@ fn compile(filter: &str, args: Option<&Bound<'_, PyDict>>) -> PyResult<JaqProgra
         .map_err(|errs| JaqCompileError::new_err(format_errors(&errs)))?;
 
     Ok(JaqProgram {
-        filter: Arc::from(filter),
-        compiled: Arc::new(compiled),
-        var_names: Arc::new(var_names),
-        var_values: Arc::new(var_values),
+        filter: Rc::from(filter),
+        compiled: Rc::new(compiled),
+        vars: Rc::from(vars),
     })
 }
 
-fn extract_args(
-    args: Option<&Bound<'_, PyDict>>,
-) -> PyResult<(Vec<String>, BTreeMap<String, serde_json::Value>)> {
-    let mut var_names = Vec::new();
-    let mut var_values = BTreeMap::new();
+fn extract_args(args: Option<&Bound<'_, PyDict>>) -> PyResult<(Vec<String>, Vec<Val>)> {
+    let Some(args_dict) = args else {
+        return Ok((Vec::new(), Vec::new()));
+    };
 
-    if let Some(args_dict) = args {
-        var_names.reserve(args_dict.len());
-        for (key, value) in args_dict.iter() {
+    args_dict
+        .iter()
+        .map(|(key, value)| {
             let name: String = key.extract()?;
-            let json_value: serde_json::Value = depythonize(&value).map_err(|e| {
-                JaqJsonError::new_err(format!("Failed to convert arg '{name}': {e}"))
-            })?;
-            var_names.push(name.clone());
-            var_values.insert(name, json_value);
-        }
-    }
-
-    Ok((var_names, var_values))
+            let val = python_to_val(&value)?;
+            Ok((name, val))
+        })
+        .collect::<PyResult<Vec<_>>>()
+        .map(|pairs| pairs.into_iter().unzip())
 }
 
-/// A compiled jaq program ready to accept input.
-#[pyclass]
-#[derive(Clone)]
+/// A compiled jaq program, ready to accept input.
+#[pyclass(frozen, unsendable)]
 struct JaqProgram {
-    filter: Arc<str>,
-    compiled: Arc<Filter<Native<Val>>>,
-    var_names: Arc<Vec<String>>,
-    var_values: Arc<BTreeMap<String, serde_json::Value>>,
+    filter: Rc<str>,
+    compiled: Rc<CompiledFilter>,
+    vars: Rc<[Val]>,
 }
 
 impl JaqProgram {
-    fn build_vars(&self) -> Vec<Val> {
-        self.var_names
-            .iter()
-            .filter_map(|name| self.var_values.get(name))
-            .map(|v| Val::from(v.clone()))
-            .collect()
-    }
-
-    fn with_input(&self, input: serde_json::Value) -> JaqProgramWithInput {
+    fn with_input(&self, input: Val) -> JaqProgramWithInput {
         JaqProgramWithInput {
-            compiled: Arc::clone(&self.compiled),
-            filter: Arc::clone(&self.filter),
-            input: input.into(),
-            vars: self.build_vars(),
+            compiled: Rc::clone(&self.compiled),
+            filter: Rc::clone(&self.filter),
+            input,
+            vars: Rc::clone(&self.vars),
         }
     }
 }
@@ -153,46 +140,26 @@ impl JaqProgram {
         &self.filter
     }
 
-    /// Provide input as a raw JSON string (fast path, skips Python object traversal).
-    ///
-    /// Args:
-    ///     text: A JSON-encoded string, or multiple whitespace-separated JSON values if slurp=True.
-    ///     slurp: If True, read all JSON values into an array.
-    ///
-    /// Returns:
-    ///     A JaqProgramWithInput that can be executed with `first()` or `all()`.
-    ///
-    /// Raises:
-    ///     JaqJsonError: If the string is not valid JSON.
+    /// Provide input as a raw JSON string (fast path — skips Python object traversal).
     #[pyo3(signature = (text, slurp=false))]
     fn input_text(&self, text: &str, slurp: bool) -> PyResult<JaqProgramWithInput> {
-        let json_value = if slurp {
-            let stream = serde_json::Deserializer::from_str(text).into_iter::<serde_json::Value>();
-            let values: Result<Vec<_>, _> = stream
-                .map(|r| r.map_err(|e| JaqJsonError::new_err(format!("Failed to parse JSON: {e}"))))
-                .collect();
-            serde_json::Value::Array(values?)
+        let bytes = text.as_bytes();
+        let input = if slurp {
+            jaq_json::read::parse_many(bytes)
+                .map(|r| r.map_err(|e| format!("Failed to parse JSON: {e}")))
+                .collect::<Result<Vec<Val>, String>>()
+                .map(|v| v.into_iter().collect::<Val>())
         } else {
-            serde_json::from_str(text)
-                .map_err(|e| JaqJsonError::new_err(format!("Failed to parse JSON: {e}")))?
-        };
-        Ok(self.with_input(json_value))
+            jaq_json::read::parse_single(bytes).map_err(|e| format!("Failed to parse JSON: {e}"))
+        }
+        .map_err(JaqJsonError::new_err)?;
+        Ok(self.with_input(input))
     }
 
     /// Provide input as a Python object (convenient, but slower for large data).
-    ///
-    /// Args:
-    ///     value: Any JSON-serializable Python object.
-    ///
-    /// Returns:
-    ///     A JaqProgramWithInput that can be executed with `first()` or `all()`.
-    ///
-    /// Raises:
-    ///     JaqJsonError: If the value cannot be converted to JSON.
     fn input_value(&self, value: &Bound<'_, PyAny>) -> PyResult<JaqProgramWithInput> {
-        let json_value: serde_json::Value = depythonize(value)
-            .map_err(|e| JaqJsonError::new_err(format!("Failed to convert input: {e}")))?;
-        Ok(self.with_input(json_value))
+        let val = python_to_val(value)?;
+        Ok(self.with_input(val))
     }
 
     fn __repr__(&self) -> String {
@@ -200,29 +167,23 @@ impl JaqProgram {
     }
 }
 
-/// A compiled jaq program with input, ready to execute.
-// Note: unsendable because Val contains Rc which isn't Send.
-#[pyclass(unsendable)]
+/// A compiled jaq program with input bound, ready to execute.
+#[pyclass(frozen, unsendable)]
 struct JaqProgramWithInput {
-    filter: Arc<str>,
-    compiled: Arc<Filter<Native<Val>>>,
+    filter: Rc<str>,
+    compiled: Rc<CompiledFilter>,
     input: Val,
-    vars: Vec<Val>,
+    vars: Rc<[Val]>,
 }
 
 impl JaqProgramWithInput {
-    fn run_first(&self) -> Option<Result<Val, jaq_core::Error<Val>>> {
-        let inputs = RcIter::new(std::iter::empty());
-        let ctx = Ctx::new(self.vars.iter().cloned(), &inputs);
-        let result = self.compiled.run((ctx, self.input.clone())).next();
-        result
-    }
-
-    fn run_all(&self) -> Vec<Result<Val, jaq_core::Error<Val>>> {
-        let inputs = RcIter::new(std::iter::empty());
-        let ctx = Ctx::new(self.vars.iter().cloned(), &inputs);
-        let result = self.compiled.run((ctx, self.input.clone())).collect();
-        result
+    /// Run the compiled filter, passing the result iterator to `f`.
+    fn run<T>(&self, f: impl FnOnce(&mut dyn Iterator<Item = FilterResult>) -> T) -> T {
+        let input = self.input.clone();
+        let vars = Vars::new(self.vars.iter().cloned());
+        let ctx = Ctx::<data::JustLut<Val>>::new(&self.compiled.lut, vars);
+        let mut iter = self.compiled.id.run((ctx, input)).map(unwrap_valr);
+        f(&mut iter)
     }
 }
 
@@ -234,51 +195,52 @@ impl JaqProgramWithInput {
         &self.filter
     }
 
-    /// Execute the filter and return the first result.
-    ///
-    /// Returns:
-    ///     The first output value, or None if the filter produces no output.
-    ///
-    /// Raises:
-    ///     JaqRuntimeError: If an error occurs during filter execution.
+    /// Execute the filter and return the first result as a Python object.
     fn first(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        match self.run_first() {
+        self.run(|iter| match iter.next() {
             Some(Ok(val)) => val_to_python(py, val),
-            Some(Err(e)) => Err(JaqRuntimeError::new_err(format!("{e:?}"))),
+            Some(Err(e)) => Err(runtime_err(e)),
             None => Ok(py.None()),
-        }
+        })
     }
 
     /// Execute the filter and return the first result as a JSON string.
-    ///
-    /// Returns:
-    ///     The first output value serialized as JSON, or None if no output.
-    ///
-    /// Raises:
-    ///     JaqRuntimeError: If an error occurs during filter execution.
-    fn text(&self) -> PyResult<Option<String>> {
-        match self.run_first() {
+    fn first_text(&self) -> PyResult<Option<String>> {
+        self.run(|iter| match iter.next() {
             Some(Ok(val)) => Ok(Some(val.to_string())),
-            Some(Err(e)) => Err(JaqRuntimeError::new_err(format!("{e:?}"))),
+            Some(Err(e)) => Err(runtime_err(e)),
             None => Ok(None),
-        }
+        })
     }
 
-    /// Execute the filter and return all results as a list.
-    ///
-    /// Returns:
-    ///     A list of all output values produced by the filter.
-    ///
-    /// Raises:
-    ///     JaqRuntimeError: If an error occurs during filter execution.
+    /// Execute the filter and return all results as a list of Python objects.
     fn all(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
-        self.run_all()
-            .into_iter()
-            .map(|r| match r {
+        self.run(|iter| {
+            iter.map(|result| match result {
                 Ok(val) => val_to_python(py, val),
-                Err(e) => Err(JaqRuntimeError::new_err(format!("{e:?}"))),
+                Err(e) => Err(runtime_err(e)),
             })
             .collect()
+        })
+    }
+
+    /// Execute the filter and return all results as a newline-separated JSON string (JSONL).
+    fn all_text(&self) -> PyResult<String> {
+        self.run(|iter| {
+            let mut buf = String::new();
+            for result in iter {
+                match result {
+                    Ok(val) => {
+                        if !buf.is_empty() {
+                            buf.push('\n');
+                        }
+                        write!(buf, "{val}").unwrap();
+                    }
+                    Err(e) => return Err(runtime_err(e)),
+                }
+            }
+            Ok(buf)
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -286,11 +248,98 @@ impl JaqProgramWithInput {
     }
 }
 
+/// Convert a jaq Val to a Python object, bypassing serde_json.
 fn val_to_python(py: Python<'_>, val: Val) -> PyResult<Py<PyAny>> {
-    let json_value = serde_json::Value::from(val);
-    pythonize(py, &json_value)
-        .map(|bound| bound.unbind())
-        .map_err(|e| JaqRuntimeError::new_err(format!("Failed to convert output: {e}")))
+    match val {
+        Val::Null => Ok(py.None()),
+        Val::Bool(b) => Ok(b.into_pyobject(py)?.to_owned().into_any().unbind()),
+        Val::Num(n) => num_to_python(py, n),
+        Val::Str(bytes, Tag::Utf8) => {
+            // SAFETY: jaq guarantees that Tag::Utf8 strings contain valid UTF-8.
+            let s = unsafe { std::str::from_utf8_unchecked(&bytes) };
+            Ok(PyString::new(py, s).into_any().unbind())
+        }
+        Val::Str(bytes, Tag::Bytes) => Ok(PyBytes::new(py, &bytes).into_any().unbind()),
+        Val::Arr(a) => {
+            let items: Vec<Py<PyAny>> = a
+                .iter()
+                .map(|item| val_to_python(py, item.clone()))
+                .collect::<PyResult<_>>()?;
+            Ok(PyList::new(py, &items)?.into_any().unbind())
+        }
+        Val::Obj(o) => {
+            let dict = PyDict::new(py);
+            for (k, v) in o.iter() {
+                let py_key = val_to_python(py, k.clone())?;
+                let py_val = val_to_python(py, v.clone())?;
+                dict.set_item(py_key, py_val)?;
+            }
+            Ok(dict.into_any().unbind())
+        }
+    }
+}
+
+fn num_to_python(py: Python<'_>, num: Num) -> PyResult<Py<PyAny>> {
+    match num {
+        Num::Int(i) => Ok(i.into_pyobject(py)?.into_any().unbind()),
+        Num::BigInt(bi) => Ok(bi.as_ref().into_pyobject(py)?.into_any().unbind()),
+        Num::Float(f) => Ok(f.into_pyobject(py)?.into_any().unbind()),
+        Num::Dec(s) => {
+            let f: f64 = s.parse().map_err(|_| {
+                JaqJsonError::new_err(format!("Cannot represent decimal '{s}' as float"))
+            })?;
+            Ok(f.into_pyobject(py)?.into_any().unbind())
+        }
+    }
+}
+
+/// Convert a Python object to a jaq Val, bypassing serde_json.
+fn python_to_val(obj: &Bound<'_, PyAny>) -> PyResult<Val> {
+    // Bool must be checked before int (bool is a subclass of int in Python).
+    if obj.is_none() {
+        Ok(Val::Null)
+    } else if let Ok(b) = obj.cast::<PyBool>() {
+        Ok(Val::Bool(b.is_true()))
+    } else if obj.is_instance_of::<PyInt>() {
+        // Uses is_instance_of (not cast) because we try the fast isize extraction
+        // first, falling back to BigInt only on overflow.
+        if let Ok(i) = obj.extract::<isize>() {
+            Ok(Val::Num(Num::Int(i)))
+        } else {
+            let bi: BigInt = obj.extract()?;
+            Ok(Val::Num(Num::big_int(bi)))
+        }
+    } else if let Ok(f) = obj.cast::<PyFloat>() {
+        Ok(Val::Num(Num::Float(f.value())))
+    } else if let Ok(s) = obj.cast::<PyString>() {
+        let s: String = s.extract()?;
+        Ok(Val::utf8_str(s))
+    } else if let Ok(b) = obj.cast::<PyBytes>() {
+        Ok(Val::byte_str(b.as_bytes().to_vec()))
+    } else if let Ok(list) = obj.cast::<PyList>() {
+        let items: Vec<Val> = list
+            .iter()
+            .map(|item| python_to_val(&item))
+            .collect::<PyResult<_>>()?;
+        Ok(items.into_iter().collect())
+    } else if let Ok(tuple) = obj.cast::<PyTuple>() {
+        let items: Vec<Val> = tuple
+            .iter()
+            .map(|item| python_to_val(&item))
+            .collect::<PyResult<_>>()?;
+        Ok(items.into_iter().collect())
+    } else if let Ok(dict) = obj.cast::<PyDict>() {
+        let mut map = Map::default();
+        for (k, v) in dict.iter() {
+            map.insert(python_to_val(&k)?, python_to_val(&v)?);
+        }
+        Ok(Val::obj(map))
+    } else {
+        Err(JaqJsonError::new_err(format!(
+            "Cannot convert {} to jaq value",
+            obj.get_type().name()?
+        )))
+    }
 }
 
 #[pymodule]

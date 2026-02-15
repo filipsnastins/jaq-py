@@ -30,7 +30,7 @@ prog.input_text('{"name": "Bob"}').first()  # "Bob"
 jaq_py.compile(".").input_text("1\n2\n3", slurp=True).first()  # [1, 2, 3]
 
 # Get result as JSON string
-jaq_py.compile(".").input_value({"a": 1}).text()  # '{"a":1}'
+jaq_py.compile(".").input_value({"a": 1}).first_text()  # '{"a":1}'
 ```
 
 ## Performance
@@ -51,3 +51,10 @@ make bench      # Run performance benchmarks
 
 - [jaq](https://github.com/01mf02/jaq) - the underlying jq clone written in Rust
 - [jq.py](https://github.com/mwilliamson/jq.py) - inspiration for the Python API design
+
+## TODO
+
+- [ ] GIL release - experiment with free-threaded mode in Python 3.13
+- [ ] Implement `__iter__` interface for `JaqProgramWithInput`.
+- [ ] Align Python API with Rust `jaq_all` crate.
+- [ ] Publish wheels for all platforms to PyPI.

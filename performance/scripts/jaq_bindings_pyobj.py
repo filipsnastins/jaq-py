@@ -7,14 +7,16 @@ Usage: jaq_bindings.py <data_file> <filter> <iterations>
 import sys
 from pathlib import Path
 
+import orjson
+
 import jaq_py
 
 data_file = Path(sys.argv[1])
 filter_expr = sys.argv[2]
 iterations = int(sys.argv[3]) if len(sys.argv) > 3 else 1  # noqa: PLR2004
 
-data = data_file.read_text(encoding="utf-8")
+data = orjson.loads(data_file.read_text(encoding="utf-8"))
 program = jaq_py.compile(filter_expr)
 
 for _ in range(iterations):
-    program.input_text(data).all()
+    __ = program.input_value(data).all()

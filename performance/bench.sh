@@ -20,7 +20,7 @@ bench() {
 
     avg_t=$(echo "scale=2; $total_time / $RUNS" | bc)
     avg_m=$(echo "scale=0; $total_mem / 1024 / 1024 / $RUNS" | bc)
-    printf "  %-22s %6ss  %6s MB\n" "$name" "$avg_t" "$avg_m"
+    printf "  %-45s %6ss  %6s MB\n" "$name" "$avg_t" "$avg_m"
 }
 
 run_benchmark() {
@@ -32,33 +32,59 @@ run_benchmark() {
     echo ""
 
     echo "CLI:"
-    bench "jq" jq "$filter" "$data"
-    bench "jaq" jaq "$filter" "$data"
+    bench "jq (input/output as text)" jq "$filter" "$data"
+    bench "jaq (input/output as text)" "$HOME/.cargo/bin/jaq" "$filter" "$data"
+
+    echo ""
+    echo "Rust native (jaq library):"
+    bench "jaq native (input/output as text)" jaq_bench/target/release/jaq_bench text "$data" "$filter" "$iterations"
+    bench "jaq native (input/output as Rust objects)" jaq_bench/target/release/jaq_bench objects "$data" "$filter" "$iterations"
 
     echo ""
     echo "Python + subprocess:"
-    bench "jq + subprocess" uv run python scripts/jq_subprocess.py "$data" "$filter" "$iterations"
-    bench "jaq + subprocess" uv run python scripts/jaq_subprocess.py "$data" "$filter" "$iterations"
+    bench "jq + subprocess (input/output as text)" uv run python scripts/jq_subprocess.py "$data" "$filter" "$iterations"
+    bench "jaq + subprocess (input/output as text)" uv run python scripts/jaq_subprocess.py "$data" "$filter" "$iterations"
 
     echo ""
     echo "Python bindings:"
-    bench "jq-python" uv run python scripts/jq_bindings.py "$data" "$filter" "$iterations"
-    bench "jaq-py" uv run python scripts/jaq_bindings.py "$data" "$filter" "$iterations"
+    bench "jq-python (input/output as Python objects)" uv run python scripts/jq_bindings_pyobj.py "$data" "$filter" "$iterations"
+    bench "jaq-py (input/output as Python objects)" uv run python scripts/jaq_bindings_pyobj.py "$data" "$filter" "$iterations"
+    bench "jaq-py (input/output as text)" uv run python scripts/jaq_bindings_text.py "$data" "$filter" "$iterations"
+}
+
+print_system_info() {
+    echo "=== System Info ==="
+    echo "Date:     $(date -u '+%Y-%m-%d %H:%M UTC')"
+    echo "OS:       $(uname -s) $(uname -r) ($(uname -m))"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        echo "CPU:      $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "unknown")"
+        echo "Cores:    $(sysctl -n hw.ncpu) logical, $(sysctl -n hw.physicalcpu) physical"
+        echo "Memory:   $(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 )) GB"
+    else
+        echo "CPU:      $(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "unknown")"
+        echo "Cores:    $(nproc 2>/dev/null || echo "unknown")"
+        echo "Memory:   $(( $(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}') / 1024 / 1024 )) GB"
+    fi
+    echo "Python:   $(uv run python --version 2>/dev/null)"
+    echo "Rust:     $(rustc --version 2>/dev/null)"
+    echo ""
 }
 
 main() {
+    print_system_info
+
     echo "Building jaq-py in release mode..."
     (cd .. && uv run maturin develop --release 2>&1 | grep -E "^(error|warning)" || true)
+    echo "Building jaq_bench (Rust native) in release mode..."
+    (cd jaq_bench && cargo build --release 2>&1 | grep -E "^(error|warning)" || true)
     echo ""
 
     echo "=== Large File (53 MB, 1 iteration) ==="
-    echo "Subprocess wins: no data conversion overhead"
     echo ""
     run_benchmark "data/large.json" "$(cat data/large.jq)" 1
 
     echo ""
     echo "=== Many Invocations (1000x) ==="
-    echo "Bindings win: no fork/exec overhead per call"
     echo ""
     run_benchmark "data/small.json" "$(cat data/small.jq)" 1000
 }
