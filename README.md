@@ -51,3 +51,7 @@ make bench      # Run performance benchmarks
 
 - [jaq](https://github.com/01mf02/jaq) - the underlying jq clone written in Rust
 - [jq.py](https://github.com/mwilliamson/jq.py) - inspiration for the Python API design
+
+## TODO
+
+- [ ] GIL release - experiment with free-threaded mode in Python 3.13
