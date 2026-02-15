@@ -30,7 +30,7 @@ prog.input_text('{"name": "Bob"}').first()  # "Bob"
 jaq_py.compile(".").input_text("1\n2\n3", slurp=True).first()  # [1, 2, 3]
 
 # Get result as JSON string
-jaq_py.compile(".").input_value({"a": 1}).text()  # '{"a":1}'
+jaq_py.compile(".").input_value({"a": 1}).first_text()  # '{"a":1}'
 ```
 
 ## Performance

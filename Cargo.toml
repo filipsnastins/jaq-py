@@ -10,9 +10,9 @@ repository = "https://github.com/filipsnastins/jaq-py"
 crate-type = ["cdylib"]
 
 [dependencies]
-jaq-core = "2.2"
-jaq-json = { version = "1.1", features = ["serde_json"] }
-jaq-std = "2.1"
-pyo3 = { version = "0.27.2", features = ["extension-module"] }
-pythonize = "0.27"
-serde_json = "1.0"
+jaq-core = "3.0.0-beta"
+jaq-json = { version = "2.0.0-beta", features = ["sync"] }
+jaq-std = "3.0.0-beta"
+jaq-all = "0.1.0-beta"
+num-bigint = "0.4"
+pyo3 = { version = "0.28", features = ["extension-module", "num-bigint"] }

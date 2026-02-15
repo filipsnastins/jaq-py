@@ -18,4 +18,4 @@ data = json.loads(data_file.read_text(encoding="utf-8"))
 program = jq.compile(filter_expr)
 
 for _ in range(iterations):
-    program.input_value(data).all()
+    __ = program.input_value(data).all()

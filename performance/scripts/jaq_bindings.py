@@ -17,4 +17,4 @@ data = data_file.read_text(encoding="utf-8")
 program = jaq_py.compile(filter_expr)
 
 for _ in range(iterations):
-    program.input_text(data).all()
+    __ = program.input_text(data).all_text()
