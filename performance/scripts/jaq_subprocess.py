@@ -16,7 +16,7 @@ data = data_file.read_text(encoding="utf-8")
 
 for _ in range(iterations):
     __ = subprocess.run(  # noqa: S603
-        ["jaq", filter_expr],  # noqa: S607
+        [Path.home() / ".cargo/bin/jaq", filter_expr],
         input=data,
         capture_output=True,
         text=True,

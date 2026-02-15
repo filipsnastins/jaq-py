@@ -20,7 +20,7 @@ bench() {
 
     avg_t=$(echo "scale=2; $total_time / $RUNS" | bc)
     avg_m=$(echo "scale=0; $total_mem / 1024 / 1024 / $RUNS" | bc)
-    printf "  %-22s %6ss  %6s MB\n" "$name" "$avg_t" "$avg_m"
+    printf "  %-45s %6ss  %6s MB\n" "$name" "$avg_t" "$avg_m"
 }
 
 run_benchmark() {
@@ -33,7 +33,7 @@ run_benchmark() {
 
     echo "CLI:"
     bench "jq" jq "$filter" "$data"
-    bench "jaq" jaq "$filter" "$data"
+    bench "jaq" "$HOME/.cargo/bin/jaq" "$filter" "$data"
 
     echo ""
     echo "Python + subprocess:"
@@ -42,8 +42,9 @@ run_benchmark() {
 
     echo ""
     echo "Python bindings:"
-    bench "jq-python" uv run python scripts/jq_bindings.py "$data" "$filter" "$iterations"
-    bench "jaq-py" uv run python scripts/jaq_bindings.py "$data" "$filter" "$iterations"
+    bench "jq-python (input/output as Python objects)" uv run python scripts/jq_bindings_pyobj.py "$data" "$filter" "$iterations"
+    bench "jaq-py (input/output as Python objects)" uv run python scripts/jaq_bindings_pyobj.py "$data" "$filter" "$iterations"
+    bench "jaq-py (input/output as text)" uv run python scripts/jaq_bindings_text.py "$data" "$filter" "$iterations"
 }
 
 main() {
@@ -52,13 +53,11 @@ main() {
     echo ""
 
     echo "=== Large File (53 MB, 1 iteration) ==="
-    echo "Subprocess wins: no data conversion overhead"
     echo ""
     run_benchmark "data/large.json" "$(cat data/large.jq)" 1
 
     echo ""
     echo "=== Many Invocations (1000x) ==="
-    echo "Bindings win: no fork/exec overhead per call"
     echo ""
     run_benchmark "data/small.json" "$(cat data/small.jq)" 1000
 }
