@@ -225,8 +225,6 @@ impl JaqProgramWithInput {
     }
 
     /// Execute the filter and return all results as a newline-separated JSON string (JSONL).
-    ///
-    /// Fastest output path — skips Python object creation entirely.
     fn all_text(&self) -> PyResult<String> {
         self.run(|iter| {
             let mut buf = String::new();

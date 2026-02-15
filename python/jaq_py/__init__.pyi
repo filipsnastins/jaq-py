@@ -114,8 +114,6 @@ class JaqProgramWithInput:
     def all_text(self) -> str:
         """Execute the filter and return all results as a newline-separated JSON string (JSONL).
 
-        Fastest output path — releases the GIL and skips Python object creation entirely.
-
         Returns:
             A newline-separated string of JSON-encoded values (JSONL / JSON Lines format).
 
