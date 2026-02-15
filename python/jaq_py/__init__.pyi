@@ -111,14 +111,14 @@ class JaqProgramWithInput:
             JaqRuntimeError: If an error occurs during filter execution.
         """
 
-    def all_text(self) -> list[str]:
-        """Execute the filter and return all results as JSON strings.
+    def all_text(self) -> str:
+        """Execute the filter and return all results as a single newline-separated JSON string.
 
-        This is the fastest output path — it skips Python object creation entirely
-        and serializes each output value directly to a JSON string.
+        This is the fastest output path — it releases the GIL, skips Python object
+        creation entirely, and writes all output values into a single buffer.
 
         Returns:
-            A list of JSON-encoded strings, one per output value.
+            A newline-separated string of JSON-encoded values (JSONL / JSON Lines format).
 
         Raises:
             JaqRuntimeError: If an error occurs during filter execution.
