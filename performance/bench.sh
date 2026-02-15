@@ -36,6 +36,11 @@ run_benchmark() {
     bench "jaq (input/output as text)" "$HOME/.cargo/bin/jaq" "$filter" "$data"
 
     echo ""
+    echo "Rust native (jaq library):"
+    bench "jaq native (input/output as text)" jaq_bench/target/release/jaq_bench text "$data" "$filter" "$iterations"
+    bench "jaq native (input/output as Rust objects)" jaq_bench/target/release/jaq_bench objects "$data" "$filter" "$iterations"
+
+    echo ""
     echo "Python + subprocess:"
     bench "jq + subprocess (input/output as text)" uv run python scripts/jq_subprocess.py "$data" "$filter" "$iterations"
     bench "jaq + subprocess (input/output as text)" uv run python scripts/jaq_subprocess.py "$data" "$filter" "$iterations"
@@ -70,6 +75,8 @@ main() {
 
     echo "Building jaq-py in release mode..."
     (cd .. && uv run maturin develop --release 2>&1 | grep -E "^(error|warning)" || true)
+    echo "Building jaq_bench (Rust native) in release mode..."
+    (cd jaq_bench && cargo build --release 2>&1 | grep -E "^(error|warning)" || true)
     echo ""
 
     echo "=== Large File (53 MB, 1 iteration) ==="
