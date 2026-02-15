@@ -10,7 +10,7 @@ repository = "https://github.com/filipsnastins/jaq-py"
 crate-type = ["cdylib"]
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 
 [dependencies]
