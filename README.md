@@ -56,3 +56,5 @@ make bench      # Run performance benchmarks
 
 - [ ] GIL release - experiment with free-threaded mode in Python 3.13
 - [ ] Implement `__iter__` interface for `JaqProgramWithInput`.
+- [ ] Align Python API with Rust `jaq_all` crate.
+- [ ] Publish wheels for all platforms to PyPI.
