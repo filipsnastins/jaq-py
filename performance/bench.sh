@@ -47,7 +47,27 @@ run_benchmark() {
     bench "jaq-py (input/output as text)" uv run python scripts/jaq_bindings_text.py "$data" "$filter" "$iterations"
 }
 
+print_system_info() {
+    echo "=== System Info ==="
+    echo "Date:     $(date -u '+%Y-%m-%d %H:%M UTC')"
+    echo "OS:       $(uname -s) $(uname -r) ($(uname -m))"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        echo "CPU:      $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "unknown")"
+        echo "Cores:    $(sysctl -n hw.ncpu) logical, $(sysctl -n hw.physicalcpu) physical"
+        echo "Memory:   $(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 )) GB"
+    else
+        echo "CPU:      $(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "unknown")"
+        echo "Cores:    $(nproc 2>/dev/null || echo "unknown")"
+        echo "Memory:   $(( $(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}') / 1024 / 1024 )) GB"
+    fi
+    echo "Python:   $(uv run python --version 2>/dev/null)"
+    echo "Rust:     $(rustc --version 2>/dev/null)"
+    echo ""
+}
+
 main() {
+    print_system_info
+
     echo "Building jaq-py in release mode..."
     (cd .. && uv run maturin develop --release 2>&1 | grep -E "^(error|warning)" || true)
     echo ""
