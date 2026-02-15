@@ -15,7 +15,8 @@ codegen-units = 1
 
 [dependencies]
 jaq-core = "3.0.0-beta"
-jaq-json = { version = "2.0.0-beta", features = ["sync"] }
+jaq-json = "2.0.0-beta"
 jaq-std = "3.0.0-beta"
+mimalloc = { version = "0.1.48", default-features = false }
 num-bigint = "0.4"
 pyo3 = { version = "0.28", features = ["extension-module", "num-bigint"] }

@@ -78,7 +78,7 @@ def test_json_error_input_value() -> None:
     class NotSerializable:
         pass
 
-    with pytest.raises(jaq_py.JaqJsonError, match=r"Failed to convert input:.*Cannot convert"):
+    with pytest.raises(jaq_py.JaqJsonError, match=r"Cannot convert NotSerializable to jaq value"):
         jaq_py.compile(".").input_value(NotSerializable()).first()
 
 
@@ -91,5 +91,5 @@ def test_json_error_compile_args() -> None:
     class NotSerializable:
         pass
 
-    with pytest.raises(jaq_py.JaqJsonError, match=r"Failed to convert arg"):
+    with pytest.raises(jaq_py.JaqJsonError, match=r"Cannot convert NotSerializable to jaq value"):
         jaq_py.compile("$x", args={"x": NotSerializable()})

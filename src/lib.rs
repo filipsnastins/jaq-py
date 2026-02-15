@@ -1,5 +1,8 @@
 //! Python bindings for jaq, a jq clone written in Rust.
 
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use jaq_core::load::{Arena, File, Loader};
 use jaq_core::{data, unwrap_valr, Compiler, Ctx, Native, Vars};
 use jaq_json::{Map, Num, Tag, Val};
@@ -8,7 +11,7 @@ use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use std::fmt::Write;
-use std::sync::Arc;
+use std::rc::Rc;
 
 pyo3::create_exception!(
     jaq_py,
@@ -88,9 +91,9 @@ fn compile(filter: &str, args: Option<&Bound<'_, PyDict>>) -> PyResult<JaqProgra
         .map_err(|errs| JaqCompileError::new_err(format_errors(&errs)))?;
 
     Ok(JaqProgram {
-        filter: Arc::from(filter),
-        compiled: Arc::new(compiled),
-        vars: Arc::from(vars),
+        filter: Rc::from(filter),
+        compiled: Rc::new(compiled),
+        vars: Rc::from(vars),
     })
 }
 
@@ -111,20 +114,20 @@ fn extract_args(args: Option<&Bound<'_, PyDict>>) -> PyResult<(Vec<String>, Vec<
 }
 
 /// A compiled jaq program, ready to accept input.
-#[pyclass(frozen)]
+#[pyclass(frozen, unsendable)]
 struct JaqProgram {
-    filter: Arc<str>,
-    compiled: Arc<CompiledFilter>,
-    vars: Arc<[Val]>,
+    filter: Rc<str>,
+    compiled: Rc<CompiledFilter>,
+    vars: Rc<[Val]>,
 }
 
 impl JaqProgram {
     fn with_input(&self, input: Val) -> JaqProgramWithInput {
         JaqProgramWithInput {
-            compiled: Arc::clone(&self.compiled),
-            filter: Arc::clone(&self.filter),
+            compiled: Rc::clone(&self.compiled),
+            filter: Rc::clone(&self.filter),
             input,
-            vars: Arc::clone(&self.vars),
+            vars: Rc::clone(&self.vars),
         }
     }
 }
@@ -147,8 +150,7 @@ impl JaqProgram {
                 .collect::<Result<Vec<Val>, String>>()
                 .map(|v| v.into_iter().collect::<Val>())
         } else {
-            jaq_json::read::parse_single(bytes)
-                .map_err(|e| format!("Failed to parse JSON: {e}"))
+            jaq_json::read::parse_single(bytes).map_err(|e| format!("Failed to parse JSON: {e}"))
         }
         .map_err(JaqJsonError::new_err)?;
         Ok(self.with_input(input))
@@ -166,12 +168,12 @@ impl JaqProgram {
 }
 
 /// A compiled jaq program with input bound, ready to execute.
-#[pyclass(frozen)]
+#[pyclass(frozen, unsendable)]
 struct JaqProgramWithInput {
-    filter: Arc<str>,
-    compiled: Arc<CompiledFilter>,
+    filter: Rc<str>,
+    compiled: Rc<CompiledFilter>,
     input: Val,
-    vars: Arc<[Val]>,
+    vars: Rc<[Val]>,
 }
 
 impl JaqProgramWithInput {
